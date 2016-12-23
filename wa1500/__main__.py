@@ -1,23 +1,38 @@
+"""Reads and publishes the wa1500 wavemeter an a zeromq socket."""
+
 import time
 import serial
 import random
 import zmq
 import datetime
 import sys
+import argparse
+
+parser = argparse.ArgumentParser(description='Reads and publishes the wa1500'
+                                 'wavemeter an a zeromq socket.\n'
+                                 'Example usage: wa1500.py --serialport COM5'
+                                 ' --publishport 5557 --topic wa1500')
+parser.add_argument("-s", "--serialport", type=str,
+                    help='Serial port to use to communicate with the'
+                         'wavemeter. e.g /dev/ttyUSB0 for linux, '
+                         'COM5 for windows',
+                    default='COM5')
+parser.add_argument("-p", "--publishport", type=int,
+                    help='zeromq port to use to broadcast the wavemeter'
+                         'reading.',
+                    default=5557)
+parser.add_argument("-t", "--topic", type=str,
+                    help='topic to use when broadcasting. e.g wa1500-lab1',
+                    default='wa1500')
+
+args = parser.parse_args()
 
 
-publish_port = "5557"
+publish_port = args.publishport
+topic = args.topic
+serial_device_path = args.serialport
 
-if len(sys.argv) >= 2:
-    serial_device_path = sys.argv[1]
-else:
-    serial_device_path = '/dev/ttyUSB0'
-
-if len(sys.argv) == 3:
-    topic = sys.argv[2]
-else:
-    topic = 'wa1500'  # This will be useful when there are multiple streams
-                      # to watch
+print('Broadcasting on port {0} with topic {1}'.format(publish_port, topic))
 
 zmq_context = zmq.Context()
 pub_socket = zmq_context.socket(zmq.PUB)
@@ -77,31 +92,35 @@ class WA1500_dummy:
         pass
 
     def read_frequency(self):
-        return 375000.00 + random.gauss(0., 0.1)
+        return 375000.00 + random.gauss(0., 0.1), 'ok'
 
     def close(self):
         pass
 
 done = False
-wavemeter_define = False
+wavemeter_defined = False
 while not done:
     try:
         wavemeter = WA1500(serial_device_path)
-        wavemeter_define = True
+        wavemeter_defined = True
         while True:
             freq, err_msg = wavemeter.read_frequency()
-            dt = str(datetime.datetime.now())
-            send_string = "%s %s %f %s" % (topic, dt, freq, err_msg)
+            timestamp = time.time()
+            data_dict = {'timestamp': timestamp,
+                         'freq': freq,
+                         'err_msg': err_msg}
+            send_string = "%s %f %s" % (topic, timestamp, repr(data_dict))
             print(send_string)
             pub_socket.send(send_string)
             time.sleep(0.5)
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as e:
+        print "KeyboardInterrupt: exiting"
         print wavemeter.close()
         pub_socket.close()
         done = True
     except serial.serialutil.SerialException as e:
-        print "Serial Exception: ", e
-        if wavemeter_define:
+        print "SerialException: ", e
+        if wavemeter_defined:
             wavemeter.close()
-            wavemeter_define = False
+            wavemeter_defined = False
         time.sleep(1.0)
